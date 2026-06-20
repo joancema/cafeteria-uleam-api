@@ -51,3 +51,34 @@ con `STORAGE=sqlc`.
 
 - `github.com/golang-jwt/jwt/v5`
 - `golang.org/x/crypto/bcrypt`
+
+---
+
+## Testing (Semana 11)
+
+La capa de tests es **aditiva**: no cambia ni una línea del código de S10, solo
+agrega archivos `_test.go`. Cubre **tres estilos** que conviene conocer:
+
+| Archivo | Qué prueba | Estilo |
+| --- | --- | --- |
+| `internal/service/producto_test.go` | La regla de negocio (`validarProducto`, `Crear`) aislada de la BD | **Mock** con `testify/mock` + **table-driven** |
+| `internal/service/auth_test.go` | Registro, login y round-trip de JWT (bcrypt + token) | Repo *fake* en memoria |
+| `internal/handlers/producto_test.go` | Los endpoints a través del **router y `middleware.Auth` reales** (201/404/400/**401 sin token**) | `httptest` |
+| `internal/storage/memoria_test.go` | El almacén en memoria (CRUD + comma-ok) | Librería **estándar** (`testing`, sin testify) |
+
+### Comandos
+
+```bash
+go test ./...                 # corre todo
+go test ./... -v              # con el nombre de cada test
+go test ./... -cover          # porcentaje por paquete
+go test ./internal/handlers/ -coverpkg=./internal/... -cover   # incluye el middleware
+```
+
+### Filosofía de cobertura
+
+No perseguimos el 100%. La **lógica de negocio** (`validarProducto`, `Crear`)
+está al **100%** porque es donde un error duele; los *getters* triviales y el
+wiring valen menos un test. **Cubrir lo que importa, no inflar el número.**
+
+> Dependencia nueva de esta semana: `github.com/stretchr/testify`.
