@@ -119,3 +119,44 @@ variantes en ramas del repositorio (ver `SETUP-GIT.md`):
 ### Dependencia nueva de esta semana
 
 - `github.com/joho/godotenv` — carga el archivo `.env` en desarrollo.
+
+---
+
+## Docker y despliegue (Semana 13)
+
+La API se conteneriza con un **Dockerfile multi-stage** (compila en una etapa con
+el toolchain de Go y copia solo el binario a una imagen mínima de Alpine) y se
+orquesta junto a **PostgreSQL** con `docker-compose.yml`.
+
+### El único cambio en el código: el Dialector de GORM
+
+Local y contenedor comparten exactamente el mismo código. GORM abstrae el motor:
+lo único que cambia entre SQLite y PostgreSQL es el `Dialector` que recibe
+`gorm.Open` (ver `internal/storage/factory.go`, función `abrirGorm`). El motor se
+elige por la variable de entorno `DB_DRIVER`:
+
+- `DB_DRIVER=sqlite` (por defecto): archivo local. **No requiere Docker** — sigue
+  funcionando igual que siempre.
+- `DB_DRIVER=postgres` + `DB_DSN=...`: usa PostgreSQL. Es lo que inyecta el
+  `docker-compose.yml`.
+
+`AutoMigrate`, los repositorios y los servicios **no cambian**.
+
+### Correr con Docker
+
+```bash
+# Requisito: go.sum debe existir (genéralo una vez con: make tidy)
+make up        # = docker compose up --build  (levanta PostgreSQL + API)
+# API en http://localhost:8080  ·  PostgreSQL en localhost:5432
+make down      # = docker compose down -v  (baja todo y borra el volumen de datos)
+make logs      # ver logs de la API
+```
+
+### Correr local sin Docker (como hasta ahora)
+
+```bash
+make run       # usa SQLite por defecto (DB_DRIVER=sqlite)
+```
+
+> Nota: el backend `sqlc` está generado para SQLite, por lo que solo aplica con
+> `DB_DRIVER=sqlite`. Con PostgreSQL el almacén usa GORM.

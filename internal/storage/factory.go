@@ -3,9 +3,12 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	"time"
 
 	_ "github.com/glebarez/go-sqlite" // driver database/sql "sqlite" (pure-Go) para el backend sqlc
-	"github.com/glebarez/sqlite"      // driver GORM (pure-Go)
+	"github.com/glebarez/sqlite"      // dialector GORM para SQLite (pure-Go)
+	"gorm.io/driver/postgres"         // dialector GORM para PostgreSQL
 	"gorm.io/gorm"
 
 	"cafeteria-uleam-api/internal/models"
@@ -21,20 +24,21 @@ type Recursos struct {
 	Cerrar       func() error
 }
 
-// Inicializar centraliza TODO el plumbing que antes vivia suelto en main.go:
+// Inicializar centraliza TODO el plumbing de almacenamiento (patron Factory).
 //
-//  1. Abre GORM (dueno del esquema), migra y siembra.
-//  2. Elige el backend de productos/categorias segun el parametro backend.
-//  3. Crea el repositorio de usuarios (siempre GORM).
-//  4. Expone una funcion Cerrar para el graceful shutdown.
+// El motor de base de datos se elige por configuracion (driver):
+//   - "sqlite"   (por defecto): archivo local, ideal para desarrollo.
+//   - "postgres": usa el DSN (dsn); es el motor que usa el contenedor Docker.
 //
-// Es un patron Factory: la aplicacion pide "dame los recursos para esta config"
-// y no necesita saber como se arman ni que drivers se importan.
-func Inicializar(rutaDB, backend string) (*Recursos, error) {
-	// 1. GORM es el DUENO DEL ESQUEMA: abre, migra y siembra.
-	gdb, err := gorm.Open(sqlite.Open(rutaDB), &gorm.Config{})
+// PUNTO CLAVE DE LA SEMANA: GORM abstrae el motor. Lo UNICO que cambia entre
+// SQLite y PostgreSQL es el Dialector que se le pasa a gorm.Open (ver abrirGorm).
+// AutoMigrate, Create, First, Find... y por lo tanto TODOS los repositorios y
+// servicios quedan IDENTICOS. No se toca ni una linea de la logica de negocio.
+func Inicializar(driver, dsn, rutaDB, backend string) (*Recursos, error) {
+	// 1. GORM es el DUENO DEL ESQUEMA: abre (segun el motor), migra y siembra.
+	gdb, err := abrirGorm(driver, dsn, rutaDB)
 	if err != nil {
-		return nil, fmt.Errorf("abrir GORM: %w", err)
+		return nil, err
 	}
 	if err := gdb.AutoMigrate(&models.Producto{}, &models.Categoria{}, &models.Usuario{}); err != nil {
 		return nil, fmt.Errorf("AutoMigrate: %w", err)
@@ -42,19 +46,20 @@ func Inicializar(rutaDB, backend string) (*Recursos, error) {
 	almacenGorm := NuevoAlmacenSQLite(gdb)
 	almacenGorm.SembrarSiVacio()
 
-	// 2. Elegir el backend de productos/categorias (este switch ES el Factory).
+	// 2. Elegir el backend de productos/categorias.
+	//    El backend sqlc esta generado para SQLite (sus queries son de SQLite),
+	//    por eso solo aplica cuando el driver es sqlite; con postgres se usa GORM.
 	var almacen Almacen
 	var sdb *sql.DB
 	backendUsado := "gorm"
-	switch backend {
-	case "sqlc":
+	if backend == "sqlc" && driver != "postgres" {
 		sdb, err = sql.Open("sqlite", rutaDB)
 		if err != nil {
 			return nil, fmt.Errorf("abrir sql.DB para sqlc: %w", err)
 		}
 		almacen = NuevoAlmacenSQLC(sdb)
 		backendUsado = "sqlc"
-	default:
+	} else {
 		almacen = almacenGorm
 	}
 
@@ -81,4 +86,32 @@ func Inicializar(rutaDB, backend string) (*Recursos, error) {
 		BackendUsado: backendUsado,
 		Cerrar:       cerrar,
 	}, nil
+}
+
+// abrirGorm elige el Dialector segun el driver y abre la conexion.
+//
+// Para PostgreSQL reintenta unos segundos: dentro de docker compose la base
+// puede tardar en aceptar conexiones aunque el contenedor ya este arriba (el
+// healthcheck del compose reduce el problema, pero el reintento lo hace robusto).
+func abrirGorm(driver, dsn, rutaDB string) (*gorm.DB, error) {
+	switch driver {
+	case "postgres":
+		var gdb *gorm.DB
+		var err error
+		for intento := 1; intento <= 10; intento++ {
+			gdb, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+			if err == nil {
+				return gdb, nil
+			}
+			log.Printf("PostgreSQL no esta listo (intento %d/10): %v", intento, err)
+			time.Sleep(2 * time.Second)
+		}
+		return nil, fmt.Errorf("conectar a PostgreSQL tras reintentos: %w", err)
+	default: // "sqlite"
+		gdb, err := gorm.Open(sqlite.Open(rutaDB), &gorm.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("abrir SQLite: %w", err)
+		}
+		return gdb, nil
+	}
 }

@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+*.db
+*.db-journal
+cafeteria-api
+*.out
+coverage.html
+README.md
+SETUP-GIT.md
+Dockerfile
+docker-compose.yml

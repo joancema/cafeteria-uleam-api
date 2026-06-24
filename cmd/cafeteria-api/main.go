@@ -36,13 +36,14 @@ func main() {
 // ordenado (graceful shutdown): deja de aceptar conexiones, termina las que
 // estan en curso y cierra la base de datos.
 func run(cfg config.Config) error {
-	// 1. Recursos de almacenamiento (Factory): abre DB, migra, siembra y elige backend.
-	recursos, err := storage.Inicializar(cfg.RutaDB, cfg.Backend)
+	// 1. Recursos de almacenamiento (Factory): abre DB (segun el motor elegido
+	//    en la config: sqlite local o postgres en Docker), migra, siembra y elige backend.
+	recursos, err := storage.Inicializar(cfg.DBDriver, cfg.DBDsn, cfg.RutaDB, cfg.Backend)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = recursos.Cerrar() }()
-	log.Printf("Backend de productos/categorias: %s", recursos.BackendUsado)
+	log.Printf("Motor de base de datos: %s | Backend de productos/categorias: %s", cfg.DBDriver, recursos.BackendUsado)
 
 	// 2. Capa de servicio. AuthService recibe secreto y duracion por Options,
 	//    tomados de la configuracion (antes eran globales hardcodeadas).

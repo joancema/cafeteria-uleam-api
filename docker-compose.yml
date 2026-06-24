@@ -1,0 +1,38 @@
+# Orquesta dos servicios: la API (que construimos con el Dockerfile) y una base
+# PostgreSQL. La API espera a que la base este "healthy" antes de arrancar.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cafeteria
+      POSTGRES_PASSWORD: cafeteria
+      POSTGRES_DB: cafeteria
+    ports:
+      - "5432:5432"
+    volumes:
+      # Volumen nombrado: los datos sobreviven a "docker compose down" (sin -v).
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cafeteria -d cafeteria"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      PUERTO: ":8080"
+      # En el contenedor usamos PostgreSQL. El host "db" es el nombre del servicio
+      # de arriba: docker compose lo resuelve por DNS interno.
+      DB_DRIVER: postgres
+      DB_DSN: "host=db user=cafeteria password=cafeteria dbname=cafeteria port=5432 sslmode=disable TimeZone=America/Guayaquil"
+      JWT_SECRETO: "cambia-esto-en-produccion"
+      STORAGE: gorm
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dbdata:

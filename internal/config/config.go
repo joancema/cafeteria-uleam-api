@@ -18,7 +18,9 @@ import (
 // fuente de verdad.
 type Config struct {
 	Puerto       string        // puerto HTTP, ej ":8080"
-	RutaDB       string        // archivo SQLite, ej "cafeteria.db"
+	DBDriver     string        // motor de base de datos: "sqlite" (default) o "postgres"
+	DBDsn        string        // DSN de PostgreSQL (solo se usa si DBDriver="postgres")
+	RutaDB       string        // archivo SQLite, ej "cafeteria.db" (solo si DBDriver="sqlite")
 	Backend      string        // backend de productos/categorias: "gorm" (default) o "sqlc"
 	JWTSecreto   []byte        // clave para firmar/verificar JWT
 	JWTDuracion  time.Duration // validez del token
@@ -36,6 +38,8 @@ func Cargar() Config {
 
 	return Config{
 		Puerto:       conTexto("PUERTO", ":8080"),
+		DBDriver:     conTexto("DB_DRIVER", "sqlite"),
+		DBDsn:        conTexto("DB_DSN", ""),
 		RutaDB:       conTexto("RUTA_DB", "cafeteria.db"),
 		Backend:      conTexto("STORAGE", "gorm"),
 		JWTSecreto:   []byte(conTexto("JWT_SECRETO", "cafeteria-uleam-secreto-solo-dev")),
