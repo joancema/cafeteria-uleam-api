@@ -1,84 +1,64 @@
-# Cafetería ULEAM API — Arquitectura en capas + Autenticación JWT
+# Cafetería ULEAM — Variante: Vertical Slice (package-by-feature)
 
-API REST de la cafetería universitaria. Esta versión formaliza la **arquitectura
-en 3 capas** (Handler → Service → Repository) e incorpora el **módulo de
-autenticación** (registro, login y protección de rutas con JWT) como ejemplo
-canónico de por qué separar capas.
+Misma API, **reorganizada por funcionalidad** en lugar de por capa técnica. Es la
+variante recomendada cuando el equipo trabaja en paralelo: **un slice = una
+carpeta = un dueño**.
 
-## Capas
+## Estructura
 
 ```
-HTTP  ─▶  Handler  ─▶  Service  ─▶  Repository  ─▶  (GORM / sqlc / Memoria)
-            (HTTP)     (negocio)     (persistencia)
+internal/
+  platform/            ← lo TRANSVERSAL (no es de ninguna entidad)
+    config/            ← carga de .env
+    web/               ← RespondJSON, RespondError, IDDeURL (sin dominio)
+    httpserver/        ← *http.Server con Options
+    middleware/        ← CORS + Auth (vía interfaz Validador)
+    storage/           ← abre DB, migra y siembra (importa los modelos de los slices)
+  producto/            ← VERTICAL COMPLETA de productos:
+    producto.go        ←   modelo
+    errores.go         ←   errores de dominio del slice
+    repository.go      ←   contrato (puerto)
+    gorm.go            ←   adaptador GORM (implementación)
+    service.go         ←   lógica de negocio
+    handler.go         ←   HTTP + mapeo de errores a status
+    routes.go          ←   monta sus propias rutas
+    service_test.go    ←   test con mock del Repository del slice
+  categoria/           ← misma estructura que producto
+  auth/                ← misma estructura (+ JWT/bcrypt y Options en el service)
 ```
 
-- **Handler** (`internal/handlers`): decodifica el request, llama al service y
-  traduce el resultado a HTTP. Sin lógica de negocio.
-- **Service** (`internal/service`): reglas de negocio y validaciones. Devuelve
-  *errores de dominio* (`ErrNombreVacio`, `ErrNoEncontrado`, `ErrEmailEnUso`...).
-- **Repository** (`internal/storage`): persistencia. La interfaz `Almacen` se
-  partió en interfaces por entidad (`ProductoRepository`, `CategoriaRepository`)
-  recompuestas por *embedding*; `UserRepository` para usuarios.
+## La idea
 
-Los tres backends previos (`Memoria`, `AlmacenSQLite` con GORM, `AlmacenSQLC`)
-siguen cumpliendo `Almacen` sin cambios: el mismo objeto satisface las interfaces
-estrechas que consume cada service.
+Comparado con la versión por capas (donde `producto` vivía repartido entre
+`handlers/producto.go`, `service/producto.go` y `storage/...`), aquí **todo lo de
+productos está en una sola carpeta**. Beneficio directo para los grupos del
+proyecto: dos estudiantes editando módulos distintos **no se pisan** —editan
+carpetas distintas— y desaparecen los conflictos de merge en `handlers/` y
+`service/`.
 
-## Autenticación
+### Cómo se evitan los ciclos de importación
 
-- `POST /api/v1/auth/register` — crea usuario (contraseña hasheada con bcrypt).
-- `POST /api/v1/auth/login` — verifica credenciales y devuelve `{"token": "..."}`.
-- El resto de rutas (`/productos`, `/categorias`) exige el header
-  `Authorization: Bearer <token>`. El middleware delega la validación al
-  `AuthService` (el JWT vive en el service, no en el middleware).
+- `platform/web` y `platform/middleware` **no conocen el dominio** → los slices
+  pueden depender de ellos sin ciclo.
+- `platform/storage` **importa** los slices (para migrar sus modelos), pero
+  **ningún slice importa `platform/storage`** → dependencia en una sola dirección.
+- El middleware de auth recibe una interfaz `Validador` (un método
+  `ValidarToken`), no el paquete `auth` → no se acoplan.
+- Cada slice **mapea sus propios errores** a HTTP en su `handler.go`.
 
-> El secreto del JWT está hardcodeado con un `TODO(S12)`: en producción va en
-> una variable de entorno.
+## Nota de alcance
+
+Para mantener la variante enfocada, **solo se incluye el backend GORM**. Los
+backends `Memoria` y `sqlc` de la versión por capas colapsan exactamente igual:
+serían un archivo más dentro de cada slice (`memoria.go`, `sqlc.go`) implementando
+el mismo `Repository`. La idea del patrón ya queda demostrada con GORM.
 
 ## Correr
 
 ```bash
-go mod tidy            # resuelve golang-jwt y golang.org/x/crypto
+cp .env.example .env          # opcional
+go mod tidy
 go build ./... && go vet ./...
-go run ./cmd/cafeteria-api      # backend GORM (por defecto)
-STORAGE=sqlc go run ./cmd/cafeteria-api   # backend sqlc para productos/categorias
+go test ./...
+go run ./cmd/cafeteria-api    # http://localhost:8080 ; Ctrl+C = apagado limpio
 ```
-
-Servidor en `http://localhost:8080`. Los usuarios viven siempre en GORM, incluso
-con `STORAGE=sqlc`.
-
-## Dependencias nuevas
-
-- `github.com/golang-jwt/jwt/v5`
-- `golang.org/x/crypto/bcrypt`
-
----
-
-## Testing (Semana 11)
-
-La capa de tests es **aditiva**: no cambia ni una línea del código de S10, solo
-agrega archivos `_test.go`. Cubre **tres estilos** que conviene conocer:
-
-| Archivo | Qué prueba | Estilo |
-| --- | --- | --- |
-| `internal/service/producto_test.go` | La regla de negocio (`validarProducto`, `Crear`) aislada de la BD | **Mock** con `testify/mock` + **table-driven** |
-| `internal/service/auth_test.go` | Registro, login y round-trip de JWT (bcrypt + token) | Repo *fake* en memoria |
-| `internal/handlers/producto_test.go` | Los endpoints a través del **router y `middleware.Auth` reales** (201/404/400/**401 sin token**) | `httptest` |
-| `internal/storage/memoria_test.go` | El almacén en memoria (CRUD + comma-ok) | Librería **estándar** (`testing`, sin testify) |
-
-### Comandos
-
-```bash
-go test ./...                 # corre todo
-go test ./... -v              # con el nombre de cada test
-go test ./... -cover          # porcentaje por paquete
-go test ./internal/handlers/ -coverpkg=./internal/... -cover   # incluye el middleware
-```
-
-### Filosofía de cobertura
-
-No perseguimos el 100%. La **lógica de negocio** (`validarProducto`, `Crear`)
-está al **100%** porque es donde un error duele; los *getters* triviales y el
-wiring valen menos un test. **Cubrir lo que importa, no inflar el número.**
-
-> Dependencia nueva de esta semana: `github.com/stretchr/testify`.

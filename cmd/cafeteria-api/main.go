@@ -1,98 +1,94 @@
-// Command cafeteria-api arranca el servidor HTTP de la Cafeteria Universitaria.
+// Command cafeteria-api arranca la API en su variante VERTICAL SLICE.
 package main
 
 import (
-	"database/sql"
+	"context"
+	"errors"
 	"log"
 	"net/http"
-	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	_ "github.com/glebarez/go-sqlite" // driver database/sql "sqlite" (pure-Go) para el backend sqlc
-	"github.com/glebarez/sqlite"      // driver GORM (pure-Go)
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
-	"gorm.io/gorm"
 
-	"cafeteria-uleam-api/internal/handlers"
-	"cafeteria-uleam-api/internal/middleware"
-	"cafeteria-uleam-api/internal/models"
-	"cafeteria-uleam-api/internal/service"
-	"cafeteria-uleam-api/internal/storage"
+	"cafeteria-uleam-api/internal/auth"
+	"cafeteria-uleam-api/internal/categoria"
+	"cafeteria-uleam-api/internal/platform/config"
+	"cafeteria-uleam-api/internal/platform/httpserver"
+	"cafeteria-uleam-api/internal/platform/middleware"
+	"cafeteria-uleam-api/internal/platform/storage"
+	"cafeteria-uleam-api/internal/producto"
 )
 
 func main() {
-	// 1. GORM es el DUENO DEL ESQUEMA: abre la DB, migra y siembra.
-	//    Ahora tambien migra la tabla de usuarios.
-	gdb, err := gorm.Open(sqlite.Open("cafeteria.db"), &gorm.Config{})
+	if err := run(config.Cargar()); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(cfg config.Config) error {
+	gdb, cerrar, err := storage.Abrir(cfg.RutaDB)
 	if err != nil {
-		log.Fatal("no se pudo abrir la base de datos: ", err)
+		return err
 	}
-	if err := gdb.AutoMigrate(&models.Producto{}, &models.Categoria{}, &models.Usuario{}); err != nil {
-		log.Fatal("fallo AutoMigrate: ", err)
-	}
-	almacenGorm := storage.NuevoAlmacenSQLite(gdb)
-	almacenGorm.SembrarSiVacio()
+	defer func() { _ = cerrar() }()
+	storage.Sembrar(gdb)
 
-	// 2. Elegir el backend de productos/categorias segun STORAGE (igual que antes).
-	var almacen storage.Almacen
-	switch os.Getenv("STORAGE") {
-	case "sqlc":
-		sdb, err := sql.Open("sqlite", "cafeteria.db")
-		if err != nil {
-			log.Fatal("no se pudo abrir sql.DB para sqlc: ", err)
-		}
-		almacen = storage.NuevoAlmacenSQLC(sdb)
-		log.Println("Backend de productos/categorias: sqlc (database/sql)")
-	default:
-		almacen = almacenGorm
-		log.Println("Backend de productos/categorias: GORM")
-	}
+	// Cada slice arma su propia vertical: repo GORM -> service -> handler.
+	prodH := producto.NuevoHandler(producto.NuevoService(producto.NuevoRepoGORM(gdb)))
+	catH := categoria.NuevoHandler(categoria.NuevoService(categoria.NuevoRepoGORM(gdb)))
+	authSvc := auth.NuevoService(
+		auth.NuevoRepoGORM(gdb),
+		auth.WithSecreto(cfg.JWTSecreto),
+		auth.WithDuracion(cfg.JWTDuracion),
+	)
+	authH := auth.NuevoHandler(authSvc)
 
-	// 3. Los usuarios viven SIEMPRE en GORM (decision de la semana). Por eso NO
-	//    cerramos gdb aunque el backend de productos sea sqlc: GORM mantiene su
-	//    conexion para la tabla de usuarios.
-	usuarioRepo := storage.NuevoUsuarioGORM(gdb)
-
-	// 4. Capa de servicio. Cada servicio recibe SOLO la interfaz estrecha que
-	//    necesita; almacen (Almacen) cumple ProductoRepository y CategoriaRepository
-	//    por embedding, asi que es asignable a ambos parametros.
-	productoSvc := service.NuevoProductoService(almacen)
-	categoriaSvc := service.NuevoCategoriaService(almacen)
-	authSvc := service.NuevoAuthService(usuarioRepo)
-
-	// 5. Server con los servicios inyectados.
-	servidor := handlers.NewServer(productoSvc, categoriaSvc, authSvc)
-
-	// 6. Router + middleware global.
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.CORS)
 
-	// 7. Rutas versionadas /api/v1/.
 	r.Route("/api/v1", func(r chi.Router) {
-		// Publicas: registro y login.
-		r.Post("/auth/register", servidor.Registrar)
-		r.Post("/auth/login", servidor.Login)
-
-		// Protegidas: exigen JWT valido en Authorization: Bearer <token>.
+		// Publicas.
+		r.Post("/auth/register", authH.Registrar)
+		r.Post("/auth/login", authH.Login)
+		// Protegidas: cada slice monta SUS rutas con r.Route(prefijo, h.Rutas).
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Auth(authSvc))
-
-			r.Get("/productos", servidor.ListarProductos)
-			r.Post("/productos", servidor.CrearProducto)
-			r.Get("/productos/{id}", servidor.ObtenerProducto)
-			r.Put("/productos/{id}", servidor.ActualizarProducto)
-			r.Delete("/productos/{id}", servidor.BorrarProducto)
-
-			r.Get("/categorias", servidor.ListarCategorias)
-			r.Post("/categorias", servidor.CrearCategoria)
-			r.Get("/categorias/{id}", servidor.ObtenerCategoria)
-			r.Put("/categorias/{id}", servidor.ActualizarCategoria)
-			r.Delete("/categorias/{id}", servidor.BorrarCategoria)
+			r.Route("/productos", prodH.Rutas)
+			r.Route("/categorias", catH.Rutas)
 		})
 	})
 
-	log.Println("Servidor escuchando en http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	srv := httpserver.Nuevo(
+		r,
+		httpserver.ConPuerto(cfg.Puerto),
+		httpserver.ConReadTimeout(cfg.ReadTimeout),
+		httpserver.ConWriteTimeout(cfg.WriteTimeout),
+	)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	errServidor := make(chan error, 1)
+	go func() {
+		log.Printf("Servidor (vertical slice) escuchando en http://localhost%s", cfg.Puerto)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errServidor <- err
+		}
+	}()
+
+	select {
+	case err := <-errServidor:
+		return err
+	case <-ctx.Done():
+		log.Println("Senal de apagado recibida, cerrando ordenadamente...")
+	}
+
+	ctxApagado, cancelar := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelar()
+	return srv.Shutdown(ctxApagado)
 }
