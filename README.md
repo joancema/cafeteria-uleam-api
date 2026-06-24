@@ -1,84 +1,63 @@
-# Cafetería ULEAM API — Arquitectura en capas + Autenticación JWT
+# Cafetería ULEAM — Variante: Hexagonal (Ports & Adapters)
 
-API REST de la cafetería universitaria. Esta versión formaliza la **arquitectura
-en 3 capas** (Handler → Service → Repository) e incorpora el **módulo de
-autenticación** (registro, login y protección de rutas con JWT) como ejemplo
-canónico de por qué separar capas.
+Esqueleto **ejecutable** con la entidad `producto` cableada de punta a punta para
+mostrar el patrón. `categoria` y `auth` se omiten a propósito (ver más abajo cómo
+se agregarían).
 
-## Capas
+## La regla del hexagonal
+
+Las dependencias apuntan **hacia el núcleo**. El núcleo no sabe que existen GORM
+ni HTTP.
 
 ```
-HTTP  ─▶  Handler  ─▶  Service  ─▶  Repository  ─▶  (GORM / sqlc / Memoria)
-            (HTTP)     (negocio)     (persistencia)
+   Adaptador ENTRADA            NÚCLEO                 Adaptador SALIDA
+   (rest.ProductoHandler) ─▶ producto.Servicio        producto.Repositorio ◀─ (persistencia.ProductoGORM)
+                              (puerto entrada)          (puerto salida)
+                                    │                        ▲
+                                    └── producto.servicio ───┘
+                                        (lógica de negocio)
 ```
 
-- **Handler** (`internal/handlers`): decodifica el request, llama al service y
-  traduce el resultado a HTTP. Sin lógica de negocio.
-- **Service** (`internal/service`): reglas de negocio y validaciones. Devuelve
-  *errores de dominio* (`ErrNombreVacio`, `ErrNoEncontrado`, `ErrEmailEnUso`...).
-- **Repository** (`internal/storage`): persistencia. La interfaz `Almacen` se
-  partió en interfaces por entidad (`ProductoRepository`, `CategoriaRepository`)
-  recompuestas por *embedding*; `UserRepository` para usuarios.
+## Estructura
 
-Los tres backends previos (`Memoria`, `AlmacenSQLite` con GORM, `AlmacenSQLC`)
-siguen cumpliendo `Almacen` sin cambios: el mismo objeto satisface las interfaces
-estrechas que consume cada service.
+```
+internal/
+  core/producto/             ← NÚCLEO (sin infraestructura)
+    producto.go              ←   entidad + errores
+    puertos.go               ←   Repositorio (salida) + Servicio (entrada)  [INTERFACES]
+    servicio.go              ←   implementación de la lógica (privada)
+  adaptadores/
+    entrada/rest/            ← adaptador de ENTRADA: depende de producto.Servicio
+    salida/persistencia/     ← adaptador de SALIDA: implementa producto.Repositorio (GORM)
+  config/
+```
 
-## Autenticación
+## El punto clave
 
-- `POST /api/v1/auth/register` — crea usuario (contraseña hasheada con bcrypt).
-- `POST /api/v1/auth/login` — verifica credenciales y devuelve `{"token": "..."}`.
-- El resto de rutas (`/productos`, `/categorias`) exige el header
-  `Authorization: Bearer <token>`. El middleware delega la validación al
-  `AuthService` (el JWT vive en el service, no en el middleware).
+En la versión por capas, la interfaz `Repository` vivía en el paquete `storage`
+(lado infraestructura). En hexagonal, **el puerto lo define el núcleo**
+(`core/producto/puertos.go`) y la infraestructura lo *implementa*. Esa inversión
+es lo que permite cambiar de GORM a otra base —o de HTTP a gRPC— sin tocar el
+núcleo. El proyecto ya lo demostraba con sus 3 backends; aquí se formaliza el
+principio.
 
-> El secreto del JWT está hardcodeado con un `TODO(S12)`: en producción va en
-> una variable de entorno.
+`NuevoServicio` devuelve la **interfaz** `Servicio`, no el struct: el exterior
+nunca ve la implementación concreta.
+
+## Cómo se agregarían categoria y auth
+
+- `categoria`: otro paquete `core/categoria` con su entidad + puertos + servicio,
+  un `persistencia.CategoriaGORM` y un handler en `rest`.
+- `auth`: `core/auth` define un puerto `Servicio` con `ValidarToken`; el
+  middleware de autenticación es **otro adaptador de entrada** que depende de ese
+  puerto. El JWT/bcrypt viven en el núcleo o en un adaptador de salida de
+  criptografía, según qué tan estricto se quiera ser.
 
 ## Correr
 
 ```bash
-go mod tidy            # resuelve golang-jwt y golang.org/x/crypto
+cp .env.example .env
+go mod tidy
 go build ./... && go vet ./...
-go run ./cmd/cafeteria-api      # backend GORM (por defecto)
-STORAGE=sqlc go run ./cmd/cafeteria-api   # backend sqlc para productos/categorias
+go run ./cmd/cafeteria-api    # GET http://localhost:8080/api/v1/productos
 ```
-
-Servidor en `http://localhost:8080`. Los usuarios viven siempre en GORM, incluso
-con `STORAGE=sqlc`.
-
-## Dependencias nuevas
-
-- `github.com/golang-jwt/jwt/v5`
-- `golang.org/x/crypto/bcrypt`
-
----
-
-## Testing (Semana 11)
-
-La capa de tests es **aditiva**: no cambia ni una línea del código de S10, solo
-agrega archivos `_test.go`. Cubre **tres estilos** que conviene conocer:
-
-| Archivo | Qué prueba | Estilo |
-| --- | --- | --- |
-| `internal/service/producto_test.go` | La regla de negocio (`validarProducto`, `Crear`) aislada de la BD | **Mock** con `testify/mock` + **table-driven** |
-| `internal/service/auth_test.go` | Registro, login y round-trip de JWT (bcrypt + token) | Repo *fake* en memoria |
-| `internal/handlers/producto_test.go` | Los endpoints a través del **router y `middleware.Auth` reales** (201/404/400/**401 sin token**) | `httptest` |
-| `internal/storage/memoria_test.go` | El almacén en memoria (CRUD + comma-ok) | Librería **estándar** (`testing`, sin testify) |
-
-### Comandos
-
-```bash
-go test ./...                 # corre todo
-go test ./... -v              # con el nombre de cada test
-go test ./... -cover          # porcentaje por paquete
-go test ./internal/handlers/ -coverpkg=./internal/... -cover   # incluye el middleware
-```
-
-### Filosofía de cobertura
-
-No perseguimos el 100%. La **lógica de negocio** (`validarProducto`, `Crear`)
-está al **100%** porque es donde un error duele; los *getters* triviales y el
-wiring valen menos un test. **Cubrir lo que importa, no inflar el número.**
-
-> Dependencia nueva de esta semana: `github.com/stretchr/testify`.
