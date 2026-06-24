@@ -12,113 +12,138 @@ import (
 	"cafeteria-uleam-api/internal/storage"
 )
 
-// productoRepoMock es un doble de prueba de storage.ProductoRepository.
-//
-// Gracias al ISP, ProductoService depende SOLO de esta interfaz estrecha (5
-// metodos), no del Almacen completo (10). Por eso el mock implementa 5 metodos
-// y no toca para nada categorias. Si manana ProductoService necesitara mas,
-// el compilador nos obligaria a anadirlos aqui: ese es el valor de la asercion
-// de abajo.
+// productoRepoMock es un doble de storage.ProductoRepository (la interfaz
+// estrecha de 5 metodos). Cada metodo solo registra la llamada y devuelve lo que
+// el test configuro con On(...). No persiste nada.
 type productoRepoMock struct {
 	mock.Mock
 }
 
 func (m *productoRepoMock) ListarProductos() []models.Producto {
-	args := m.Called()
-	return args.Get(0).([]models.Producto)
+	return m.Called().Get(0).([]models.Producto)
 }
-
 func (m *productoRepoMock) BuscarProductoPorID(id int) (models.Producto, bool) {
-	args := m.Called(id)
-	return args.Get(0).(models.Producto), args.Bool(1)
+	a := m.Called(id)
+	return a.Get(0).(models.Producto), a.Bool(1)
 }
-
 func (m *productoRepoMock) CrearProducto(p models.Producto) models.Producto {
-	args := m.Called(p)
-	return args.Get(0).(models.Producto)
+	return m.Called(p).Get(0).(models.Producto)
 }
-
 func (m *productoRepoMock) ActualizarProducto(id int, datos models.Producto) (models.Producto, bool) {
-	args := m.Called(id, datos)
-	return args.Get(0).(models.Producto), args.Bool(1)
+	a := m.Called(id, datos)
+	return a.Get(0).(models.Producto), a.Bool(1)
 }
-
 func (m *productoRepoMock) BorrarProducto(id int) bool {
-	args := m.Called(id)
-	return args.Bool(0)
+	return m.Called(id).Bool(0)
 }
 
 // Red de seguridad en tiempo de compilacion: el mock DEBE cumplir el contrato.
 var _ storage.ProductoRepository = (*productoRepoMock)(nil)
 
-// TestProductoService_Crear comprueba la REGLA DE NEGOCIO (validarProducto) de
-// forma aislada, sin base de datos. Es un test table-driven: una sola funcion
-// recorre varios casos.
+// --- Crear: la regla de negocio (validarProducto), aislada de la base ---
+
 func TestProductoService_Crear(t *testing.T) {
 	casos := []struct {
 		nombre        string
 		entrada       models.Producto
-		errEsperado   error // nil = se espera exito
+		errEsperado   error // nil = exito
 		debePersistir bool
 	}{
-		{
-			nombre:        "nombre vacio -> ErrNombreVacio",
-			entrada:       models.Producto{Nombre: "   ", Precio: 1.25},
-			errEsperado:   service.ErrNombreVacio,
-			debePersistir: false,
-		},
-		{
-			nombre:        "precio negativo -> ErrPrecioNegativo",
-			entrada:       models.Producto{Nombre: "Cafe americano", Precio: -1.0},
-			errEsperado:   service.ErrPrecioNegativo,
-			debePersistir: false,
-		},
-		{
-			nombre:        "producto valido -> sin error y se persiste",
-			entrada:       models.Producto{Nombre: "Cafe americano", Precio: 1.25, Stock: 10, CategoriaID: 1},
-			errEsperado:   nil,
-			debePersistir: true,
-		},
+		{"nombre vacio rechazado", models.Producto{Nombre: "   ", Precio: 1.25}, service.ErrNombreVacio, false},
+		{"precio negativo rechazado", models.Producto{Nombre: "Cafe", Precio: -1}, service.ErrPrecioNegativo, false},
+		{"producto valido se persiste", models.Producto{Nombre: "Cafe", Precio: 1.25, Stock: 10, CategoriaID: 1}, nil, true},
 	}
-
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
-			// Preparar: un mock nuevo por caso para no arrastrar estado.
 			repo := new(productoRepoMock)
 			if c.debePersistir {
-				// El repo devuelve el producto con un ID asignado.
 				guardado := c.entrada
 				guardado.ID = 42
 				repo.On("CrearProducto", c.entrada).Return(guardado)
 			}
 			svc := service.NuevoProductoService(repo)
 
-			// Ejecutar.
 			creado, err := svc.Crear(c.entrada)
 
-			// Verificar.
 			if c.errEsperado != nil {
 				require.ErrorIs(t, err, c.errEsperado)
-				// Si la validacion falla, el repo NO debe haberse tocado.
-				repo.AssertNotCalled(t, "CrearProducto")
+				repo.AssertNotCalled(t, "CrearProducto") // la validacion corto antes
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, 42, creado.ID, "el service debe devolver el producto que entrego el repo")
+				assert.Equal(t, 42, creado.ID)
 				repo.AssertCalled(t, "CrearProducto", c.entrada)
 			}
 		})
 	}
 }
 
-// TestProductoService_Obtener_NoEncontrado muestra como el service traduce el
-// comma-ok del repositorio (false) en un error de dominio (ErrNoEncontrado).
-func TestProductoService_Obtener_NoEncontrado(t *testing.T) {
+// --- Obtener: comma-ok del repo traducido a error de dominio ---
+
+func TestProductoService_Obtener(t *testing.T) {
+	t.Run("existe", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		repo.On("BuscarProductoPorID", 1).Return(models.Producto{ID: 1, Nombre: "Cafe"}, true)
+		p, err := service.NuevoProductoService(repo).Obtener(1)
+		require.NoError(t, err)
+		assert.Equal(t, "Cafe", p.Nombre)
+	})
+	t.Run("no existe -> ErrNoEncontrado", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		repo.On("BuscarProductoPorID", 999).Return(models.Producto{}, false)
+		_, err := service.NuevoProductoService(repo).Obtener(999)
+		require.ErrorIs(t, err, service.ErrNoEncontrado)
+	})
+}
+
+// --- Actualizar: valida ANTES de tocar el repo, y mapea el no encontrado ---
+
+func TestProductoService_Actualizar(t *testing.T) {
+	datos := models.Producto{Nombre: "Cafe doble", Precio: 1.5}
+
+	t.Run("valido", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		actualizado := datos
+		actualizado.ID = 1
+		repo.On("ActualizarProducto", 1, datos).Return(actualizado, true)
+		p, err := service.NuevoProductoService(repo).Actualizar(1, datos)
+		require.NoError(t, err)
+		assert.Equal(t, 1, p.ID)
+	})
+	t.Run("no existe -> ErrNoEncontrado", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		repo.On("ActualizarProducto", 999, datos).Return(models.Producto{}, false)
+		_, err := service.NuevoProductoService(repo).Actualizar(999, datos)
+		require.ErrorIs(t, err, service.ErrNoEncontrado)
+	})
+	t.Run("invalido no toca el repo", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		_, err := service.NuevoProductoService(repo).Actualizar(1, models.Producto{Nombre: ""})
+		require.ErrorIs(t, err, service.ErrNombreVacio)
+		repo.AssertNotCalled(t, "ActualizarProducto")
+	})
+}
+
+// --- Borrar ---
+
+func TestProductoService_Borrar(t *testing.T) {
+	t.Run("existe", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		repo.On("BorrarProducto", 1).Return(true)
+		require.NoError(t, service.NuevoProductoService(repo).Borrar(1))
+	})
+	t.Run("no existe -> ErrNoEncontrado", func(t *testing.T) {
+		repo := new(productoRepoMock)
+		repo.On("BorrarProducto", 999).Return(false)
+		require.ErrorIs(t, service.NuevoProductoService(repo).Borrar(999), service.ErrNoEncontrado)
+	})
+}
+
+// --- Listar: el service solo delega ---
+
+func TestProductoService_Listar(t *testing.T) {
 	repo := new(productoRepoMock)
-	repo.On("BuscarProductoPorID", 999).Return(models.Producto{}, false)
-	svc := service.NuevoProductoService(repo)
-
-	_, err := svc.Obtener(999)
-
-	require.ErrorIs(t, err, service.ErrNoEncontrado)
+	repo.On("ListarProductos").Return([]models.Producto{{ID: 1}, {ID: 2}})
+	lista := service.NuevoProductoService(repo).Listar()
+	assert.Len(t, lista, 2)
 	repo.AssertExpectations(t)
 }

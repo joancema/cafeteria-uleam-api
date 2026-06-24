@@ -5,20 +5,33 @@ import "cafeteria-uleam-api/internal/service"
 
 // Server agrupa los servicios de los que dependen los handlers.
 //
-// Antes guardaba un storage.Almacen directo; ahora guarda la capa de servicio,
-// que es la que tiene la logica de negocio. Los handlers quedan delgados:
-// decodifican el request, llaman al servicio y traducen el resultado a HTTP.
+// Guarda la capa de servicio (no el storage directo): los handlers quedan
+// delgados: decodifican el request, llaman al servicio y traducen el resultado
+// a HTTP.
 type Server struct {
 	Productos  *service.ProductoService
 	Categorias *service.CategoriaService
 	Auth       *service.AuthService
 }
 
-// NewServer construye un Server con sus servicios ya inyectados.
-func NewServer(productos *service.ProductoService, categorias *service.CategoriaService, auth *service.AuthService) *Server {
+// Deps agrupa las dependencias requeridas para construir un Server.
+//
+// Antes NewServer recibia un parametro posicional por servicio; agregar una
+// entidad obligaba a cambiar la firma Y todos los call-sites, y dos parametros
+// del mismo tipo eran faciles de intercambiar por error. Con un struct de
+// dependencias y campos NOMBRADOS, agregar una entidad es agregar un campo:
+// nada mas se rompe y desaparece el riesgo de intercambiar argumentos.
+type Deps struct {
+	Productos  *service.ProductoService
+	Categorias *service.CategoriaService
+	Auth       *service.AuthService
+}
+
+// NewServer construye un Server a partir de sus dependencias.
+func NewServer(d Deps) *Server {
 	return &Server{
-		Productos:  productos,
-		Categorias: categorias,
-		Auth:       auth,
+		Productos:  d.Productos,
+		Categorias: d.Categorias,
+		Auth:       d.Auth,
 	}
 }

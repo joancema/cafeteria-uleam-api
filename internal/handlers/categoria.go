@@ -3,9 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
-
-	"github.com/go-chi/chi/v5"
 
 	"cafeteria-uleam-api/internal/models"
 )
@@ -17,7 +14,7 @@ func (s *Server) ListarCategorias(w http.ResponseWriter, _ *http.Request) {
 
 // ObtenerCategoria atiende GET /api/v1/categorias/{id}.
 func (s *Server) ObtenerCategoria(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
@@ -47,7 +44,7 @@ func (s *Server) CrearCategoria(w http.ResponseWriter, r *http.Request) {
 
 // ActualizarCategoria atiende PUT /api/v1/categorias/{id}.
 func (s *Server) ActualizarCategoria(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
@@ -67,7 +64,7 @@ func (s *Server) ActualizarCategoria(w http.ResponseWriter, r *http.Request) {
 
 // BorrarCategoria atiende DELETE /api/v1/categorias/{id}.
 func (s *Server) BorrarCategoria(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return

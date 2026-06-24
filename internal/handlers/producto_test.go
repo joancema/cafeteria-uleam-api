@@ -4,158 +4,113 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"cafeteria-uleam-api/internal/handlers"
-	"cafeteria-uleam-api/internal/middleware"
 	"cafeteria-uleam-api/internal/models"
-	"cafeteria-uleam-api/internal/service"
-	"cafeteria-uleam-api/internal/storage"
 )
 
-// usuarioRepoFake: repositorio de usuarios en memoria para los tests de handler.
-type usuarioRepoFake struct {
-	porEmail map[string]models.Usuario
-	nextID   int
+// ejecutar corre una peticion contra el handler y devuelve el recorder.
+func ejecutar(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
 
-func nuevoUsuarioRepoFake() *usuarioRepoFake {
-	return &usuarioRepoFake{porEmail: map[string]models.Usuario{}, nextID: 1}
+func TestListarProductos_OK(t *testing.T) {
+	h, _, _ := construirEntorno()
+	token := tokenValido(t, h)
+
+	rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos", "", token))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var lista []models.Producto
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&lista))
+	assert.Len(t, lista, 1) // el producto sembrado
 }
 
-func (f *usuarioRepoFake) CrearUsuario(u models.Usuario) (models.Usuario, error) {
-	u.ID = f.nextID
-	f.nextID++
-	f.porEmail[u.Email] = u
-	return u, nil
-}
+func TestObtenerProducto(t *testing.T) {
+	h, _, _ := construirEntorno()
+	token := tokenValido(t, h)
 
-func (f *usuarioRepoFake) BuscarUsuarioPorEmail(email string) (models.Usuario, bool) {
-	u, ok := f.porEmail[email]
-	return u, ok
-}
-
-// construirEntorno arma el MISMO router que main.go (mismas rutas, mismo
-// middleware.Auth real) pero con almacen en memoria y repo de usuarios fake.
-// Devuelve el handler listo para httptest y un token valido ya emitido.
-//
-// Clave pedagogica: probamos a traves del middleware REAL, no de uno simplificado.
-// Si el wiring de la ruta protegida se rompe, este test se entera.
-func construirEntorno(t *testing.T) (http.Handler, string) {
-	t.Helper()
-
-	almacen := storage.NuevaMemoria()
-	almacen.SeedProductos()
-	almacen.SeedCategorias()
-	usuarios := nuevoUsuarioRepoFake()
-
-	productoSvc := service.NuevoProductoService(almacen)
-	categoriaSvc := service.NuevoCategoriaService(almacen)
-	authSvc := service.NuevoAuthService(usuarios)
-	srv := handlers.NewServer(productoSvc, categoriaSvc, authSvc)
-
-	r := chi.NewRouter()
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/auth/register", srv.Registrar)
-		r.Post("/auth/login", srv.Login)
-
-		r.Group(func(r chi.Router) {
-			r.Use(middleware.Auth(authSvc)) // <- el middleware real de S10
-			r.Get("/productos", srv.ListarProductos)
-			r.Post("/productos", srv.CrearProducto)
-			r.Get("/productos/{id}", srv.ObtenerProducto)
-			r.Put("/productos/{id}", srv.ActualizarProducto)
-			r.Delete("/productos/{id}", srv.BorrarProducto)
-		})
+	t.Run("existe -> 200", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos/1", "", token))
+		assert.Equal(t, http.StatusOK, rec.Code)
 	})
-
-	token := registrarYObtenerToken(t, r)
-	return r, token
+	t.Run("no existe -> 404", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos/9999", "", token))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
+	t.Run("id no numerico -> 400", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos/abc", "", token))
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
 }
 
-// registrarYObtenerToken hace register + login contra el propio router para
-// conseguir un JWT valido, igual que lo haria un cliente real.
-func registrarYObtenerToken(t *testing.T, h http.Handler) string {
-	t.Helper()
-	cred := `{"email":"docente@uleam.edu.ec","password":"secreta123"}`
+func TestCrearProducto(t *testing.T) {
+	h, _, _ := construirEntorno()
+	token := tokenValido(t, h)
 
-	reqReg := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(cred))
-	h.ServeHTTP(httptest.NewRecorder(), reqReg)
-
-	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(cred))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, reqLogin)
-	require.Equal(t, http.StatusOK, rec.Code, "el login deberia devolver 200")
-
-	var resp struct {
-		Token string `json:"token"`
-	}
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	require.NotEmpty(t, resp.Token)
-	return resp.Token
+	t.Run("valido -> 201", func(t *testing.T) {
+		body := `{"nombre":"Te verde","precio":1.10,"stock":15,"categoria_id":1}`
+		rec := ejecutar(h, jsonReq(http.MethodPost, "/api/v1/productos", body, token))
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var creado models.Producto
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&creado))
+		assert.NotZero(t, creado.ID)
+	})
+	t.Run("nombre vacio -> 400", func(t *testing.T) {
+		body := `{"nombre":"   ","precio":2.0}`
+		rec := ejecutar(h, jsonReq(http.MethodPost, "/api/v1/productos", body, token))
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+	t.Run("JSON malformado -> 400", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodPost, "/api/v1/productos", `{roto`, token))
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
 }
 
-// TestCrearProducto_Exitoso: POST con token y cuerpo valido -> 201 Created.
-func TestCrearProducto_Exitoso(t *testing.T) {
-	h, token := construirEntorno(t)
-	body := `{"nombre":"Te verde","precio":1.10,"stock":15,"categoria_id":1}`
+func TestActualizarProducto(t *testing.T) {
+	h, _, _ := construirEntorno()
+	token := tokenValido(t, h)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/productos", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusCreated, rec.Code)
-	var creado models.Producto
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&creado))
-	assert.NotZero(t, creado.ID)
-	assert.Equal(t, "Te verde", creado.Nombre)
+	t.Run("valido -> 200", func(t *testing.T) {
+		body := `{"nombre":"Cafe doble","precio":1.80,"stock":5,"categoria_id":1}`
+		rec := ejecutar(h, jsonReq(http.MethodPut, "/api/v1/productos/1", body, token))
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+	t.Run("no existe -> 404", func(t *testing.T) {
+		body := `{"nombre":"X","precio":1.0}`
+		rec := ejecutar(h, jsonReq(http.MethodPut, "/api/v1/productos/9999", body, token))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
 }
 
-// TestObtenerProducto_NoEncontrado: id inexistente -> 404 Not Found.
-func TestObtenerProducto_NoEncontrado(t *testing.T) {
-	h, token := construirEntorno(t)
+func TestBorrarProducto(t *testing.T) {
+	h, _, _ := construirEntorno()
+	token := tokenValido(t, h)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/productos/9999", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	t.Run("existe -> 204", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodDelete, "/api/v1/productos/1", "", token))
+		assert.Equal(t, http.StatusNoContent, rec.Code)
+	})
+	t.Run("no existe -> 404", func(t *testing.T) {
+		rec := ejecutar(h, jsonReq(http.MethodDelete, "/api/v1/productos/9999", "", token))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
 }
 
-// TestCrearProducto_Invalido: cuerpo que viola la regla de negocio -> 400.
-func TestCrearProducto_Invalido(t *testing.T) {
-	h, token := construirEntorno(t)
-	body := `{"nombre":"   ","precio":2.0}` // nombre vacio
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/productos", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-}
-
-// TestRutaProtegida_SinToken: sin header Authorization, el middleware corta
-// antes de llegar al handler -> 401 Unauthorized.
+// El corazon de la seguridad: el middleware corta ANTES del handler.
 func TestRutaProtegida_SinToken(t *testing.T) {
-	h, _ := construirEntorno(t)
-	body := `{"nombre":"Te verde","precio":1.10}`
+	h, _, _ := construirEntorno()
+	rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos", "", "")) // sin Bearer
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/productos", strings.NewReader(body))
-	// A proposito: NO seteamos Authorization.
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
+func TestRutaProtegida_TokenInvalido(t *testing.T) {
+	h, _, _ := construirEntorno()
+	rec := ejecutar(h, jsonReq(http.MethodGet, "/api/v1/productos", "", "token.falso.123"))
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }

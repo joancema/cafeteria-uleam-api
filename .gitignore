@@ -1,8 +1,0 @@
-# Binarios y base de datos local
-/cafeteria-api
-*.db
-*.db-journal
-
-# Cobertura
-*.out
-coverage.html

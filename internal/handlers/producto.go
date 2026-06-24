@@ -3,9 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
-
-	"github.com/go-chi/chi/v5"
 
 	"cafeteria-uleam-api/internal/models"
 )
@@ -17,7 +14,7 @@ func (s *Server) ListarProductos(w http.ResponseWriter, _ *http.Request) {
 
 // ObtenerProducto atiende GET /api/v1/productos/{id}.
 func (s *Server) ObtenerProducto(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
@@ -47,7 +44,7 @@ func (s *Server) CrearProducto(w http.ResponseWriter, r *http.Request) {
 
 // ActualizarProducto atiende PUT /api/v1/productos/{id}.
 func (s *Server) ActualizarProducto(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
@@ -67,7 +64,7 @@ func (s *Server) ActualizarProducto(w http.ResponseWriter, r *http.Request) {
 
 // BorrarProducto atiende DELETE /api/v1/productos/{id}.
 func (s *Server) BorrarProducto(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := idDeURL(r)
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
