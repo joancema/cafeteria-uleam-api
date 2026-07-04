@@ -19,7 +19,7 @@ func (s *Server) ObtenerCategoria(w http.ResponseWriter, r *http.Request) {
 		RespondError(w, http.StatusBadRequest, "id debe ser un numero entero")
 		return
 	}
-	categoria, err := s.Categorias.Obtener(idx)
+	categoria, err := s.Categorias.Obtener(id)
 	if err != nil {
 		RespondError(w, statusDeError(err), err.Error())
 		return
