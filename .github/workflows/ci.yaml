@@ -1,0 +1,26 @@
+name: CI
+ 
+on:
+  push:
+  pull_request:
+ 
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v7
+ 
+      - name: Instalar Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+ 
+      - name: Compilar (go build)
+        run: go build ./...
+ 
+      - name: Analizar código (go vet)
+        run: go vet ./...
+ 
+      - name: Ejecutar tests (go test)
+        run: go test -v ./...
