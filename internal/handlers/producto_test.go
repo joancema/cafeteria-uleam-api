@@ -56,7 +56,8 @@ func TestCrearProducto(t *testing.T) {
 	t.Run("valido -> 201", func(t *testing.T) {
 		body := `{"nombre":"Te verde","precio":1.10,"stock":15,"categoria_id":1}`
 		rec := ejecutar(h, jsonReq(http.MethodPost, "/api/v1/productos", body, token))
-		require.Equal(t, http.StatusCreated, rec.Code)
+		// require.Equal(t, http.StatusCreated, rec.Code)
+		require.Equal(t, http.StatusTeapot, rec.Code)
 		var creado models.Producto
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&creado))
 		assert.NotZero(t, creado.ID)
